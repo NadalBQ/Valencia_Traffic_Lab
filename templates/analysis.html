@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<a href="/">← Volver</a>
+
+<h2>Análisis nodo {{ node }}</h2>
+
+<input type="range" id="analysisHour" min="0" max="23" value="8">
+
+<canvas id="flowChart"></canvas>
+<canvas id="impactChart"></canvas>
+
+<script>
+    const NODE = {{ node }};
+</script>
+
+<script src="/static/js/analysis.js"></script>
+
+{% endblock %}

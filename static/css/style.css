@@ -1,0 +1,26 @@
+body { margin: 0; font-family: Arial; }
+
+header {
+    background: #111;
+    color: white;
+    padding: 10px;
+}
+
+.layout {
+    display: flex;
+    height: 90vh;
+}
+
+#map {
+    flex: 3;
+}
+
+#panel {
+    flex: 1;
+    background: #f4f4f4;
+    padding: 10px;
+}
+
+.controls {
+    padding: 10px;
+}

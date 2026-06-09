@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="controls">
+    <input type="range" id="hour" min="0" max="23" value="8">
+    <span id="hourLabel">08:00</span>
+</div>
+
+<div class="layout">
+
+    <div id="map"></div>
+
+    <div id="panel">
+        <h3>Escenario</h3>
+        <div id="info"></div>
+    </div>
+
+</div>
+
+<script src="/static/js/scenario.js"></script>
+<script src="/static/js/map.js"></script>
+
+{% endblock %}
