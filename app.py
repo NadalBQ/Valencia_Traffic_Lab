@@ -2,6 +2,122 @@ from flask import Flask, render_template, jsonify, request
 import osmnx as ox
 import networkx as nx
 import random
+from pathlib import Path
+import pandas as pd
+from functools import lru_cache
+import json
+import pickle
+import os
+
+
+TRAFFIC_DIR = Path("traffic_data")
+
+
+# Build the map
+
+def get_reference_csv():
+
+    files = sorted(
+        TRAFFIC_DIR.glob("estat_traf*.csv")
+    )
+
+    if not files:
+        raise RuntimeError(
+            "No traffic CSV found"
+        )
+    
+    return str(files[0])
+
+
+def build_segment_mapping():
+
+    cache_file = "cache/segment_mapping.pkl"
+
+    if os.path.exists(cache_file):
+
+        with open(cache_file, "rb") as f:
+            return pickle.load(f)
+
+    print("Building traffic mapping...")
+
+    df = pd.read_csv(
+        get_reference_csv(), sep=";"
+    )
+
+    mapping = {}
+
+    for _, row in df.iterrows():
+
+        try:
+
+            geometry = json.loads(
+                row["geo_shape"]
+            )
+
+            coords = geometry["coordinates"]
+
+            midpoint = coords[
+                len(coords)//2
+            ]
+
+            lon = midpoint[0]
+            lat = midpoint[1]
+
+            u, v, k = ox.distance.nearest_edges(
+                G,
+                lon,
+                lat,
+                return_dist=False
+            )
+
+            mapping[
+                row["Id. Tram / Id. Tramo"]
+            ] = (
+                u,
+                v,
+                k
+            )
+
+        except Exception:
+            continue
+
+    os.makedirs(
+        "cache",
+        exist_ok=True
+    )
+
+    with open(cache_file, "wb") as f:
+        pickle.dump(
+            mapping,
+            f
+        )
+
+    return mapping
+
+
+
+
+@lru_cache(maxsize=50)
+def load_traffic_snapshot(
+    date_str,
+    hour_str
+):
+
+    pattern = (
+        f"estat_traf"
+        f"{date_str}_"
+        f"{hour_str}*.csv"
+    )
+
+    files = list(
+        TRAFFIC_DIR.glob(pattern)
+    )
+
+    if not files:
+        return None
+
+    return pd.read_csv(files[0], sep=";")
+
 
 app = Flask(__name__)
 
@@ -9,6 +125,40 @@ app = Flask(__name__)
 # Real Valencia Graph
 # =========================
 G = ox.graph_from_place("Valencia, Spain", network_type="drive")
+
+SEGMENT_MAPPING = build_segment_mapping()
+print(len(SEGMENT_MAPPING))
+def apply_snapshot(snapshot):
+
+    state_to_flow = {
+        0: 50,
+        1: 200,
+        2: 500,
+        3: 1000,
+        4: 2000,
+        5: 4000
+    }
+
+    for _, row in snapshot.iterrows():
+
+        segment_id = row[
+            "Id. Tram / Id. Tramo"
+        ]
+
+        if segment_id not in SEGMENT_MAPPING:
+            continue
+
+        u, v, k = SEGMENT_MAPPING[
+            segment_id
+        ]
+
+        flow = state_to_flow.get(
+            row["Estat / Estado"],
+            100
+        )
+
+        G[u][v][k]["base_flow"] = flow
+
 
 @app.route("/api/geojson")
 def geojson():
@@ -35,9 +185,14 @@ def geojson():
 # Starting scenario
 # =========================
 scenario = {
-    "hour": 8,
+    "date": "31-12-2022",
+    "hour": "00-00",
     "selected_edge": None,
-    "closed_edges": set()
+    "closed_edges": set(),
+    "traffic_alert": {
+        "interrupted": False,
+        "suggested_reopenings": []
+    }
 }
 
 # =========================
@@ -55,46 +210,78 @@ init_flows()
 # Flow estimation after closing edges
 # =========================
 def compute_flows():
+    # Reset the alert after each call
+    scenario["traffic_alert"] = {
+        "interrupted": False,
+        "suggested_reopenings": []
+    }
 
-    # reset flows
+    # 1. Reset initial state using historical data from the snapshot
+    snapshot = load_traffic_snapshot(scenario["date"], scenario["hour"])
+    if snapshot is not None:
+        apply_snapshot(snapshot)
+    else:
+        for u, v, k, data in G.edges(keys=True, data=True):
+            data["base_flow"] = max(50, int(1000 / (data.get("length", 100) + 1)))
+
     for u, v, k, data in G.edges(keys=True, data=True):
         data["flow"] = data["base_flow"]
 
-    # Make a copy to not lose the real graph
+    if not scenario["closed_edges"]:
+        return
+
+    # 2. Make a copy to calculate reroutes
     G_temp = G.copy()
-
-    for (u, v) in scenario["closed_edges"]:
+    for u, v in scenario["closed_edges"]:
+        for k in G[u][v]:
+            G[u][v][k]["base_flow"] = G[u][v][k]["flow"]
+            G[u][v][k]["flow"] = 0
+            
         if G_temp.has_edge(u, v):
-            G_temp.remove_edge(u, v)
+            for k in G_temp[u][v]:
+                G_temp[u][v][k]["length"] = 9999999  # Extreme penalty to avoid taking it
 
-    # Redistribution simulation
-    nodes = list(G_temp.nodes())
-
-    for _ in range(200):  # N vehicles simulated
-        origin = random.choice(nodes)
-        target = random.choice(nodes)
-
-        if origin == target:
+    # 3. Redistribute closed streets flow
+    for u, v in scenario["closed_edges"]:
+        if not G.has_edge(u, v):
             continue
-
-        try:
-            path = nx.shortest_path(
-                G_temp,
-                origin,
-                target,
-                weight="length"
-            )
-
-            # adding flow on the path's edges
-            for i in range(len(path) - 1):
-                u = path[i]
-                v = path[i + 1]
-
-                if G.has_edge(u, v):
-                    G[u][v][0]["flow"] += 1
-
-        except:
-            continue
+            
+        for k in G[u][v]:
+            trapped_flow = G[u][v][k]["base_flow"]
+            if trapped_flow <= 0:
+                continue
+                
+            try:
+                # Look for alternative path
+                alternative_path = nx.shortest_path(G_temp, source=u, target=v, weight="length")
+                
+                # Redirect traffic
+                for i in range(len(alternative_path) - 1):
+                    alt_u = alternative_path[i]
+                    alt_v = alternative_path[i+1]
+                    for alt_k in G[alt_u][alt_v]:
+                        G[alt_u][alt_v][alt_k]["flow"] += trapped_flow
+                        
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                scenario["traffic_alert"]["interrupted"] = True
+                
+                # Get closed street names to suggest
+                suggested = []
+                for cu, cv in scenario["closed_edges"]:
+                    # Try to get the name from the graph
+                    edge_data = G[cu][cv][0]
+                    street_name = edge_data.get("name", f"Calle ({cu} -> {cv})")
+                    
+                    # If OSM returns a list
+                    if isinstance(street_name, list):
+                        street_name = " / ".join(street_name)
+                        
+                    street_info = {"u": cu, "v": cv, "name": street_name}
+                    if street_info not in suggested:
+                        suggested.append(street_info)
+                
+                scenario["traffic_alert"]["suggested_reopenings"] = suggested
+                continue
 
 
 # =========================
