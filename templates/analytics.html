@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<h2>Traffic Analytics</h2>
+
+<div id="streetTitle">
+    Global Valencia Analytics
+</div>
+
+<div class="analytics-grid">
+
+    <canvas id="flowChart"></canvas>
+
+    <canvas id="congestionChart"></canvas>
+
+</div>
+
+<div id="insights"></div>
+
+<script src="/static/js/analytics.js"></script>
+
+{% endblock %}

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block content %}
-
+<div id="traffic-alert-box"></div>
 <div class="controls">
     <input type="range" id="hour" min="0" max="23" value="8">
     <span id="hourLabel">08:00</span>
@@ -12,8 +12,17 @@
     <div id="map"></div>
 
     <div id="panel">
-        <h3>Escenario</h3>
+
+        <h3>Scenario</h3>
+
         <div id="info"></div>
+
+        <hr>
+
+        <h4>Most impacted streets</h4>
+
+        <div id="impacted"></div>
+
     </div>
 
 </div>

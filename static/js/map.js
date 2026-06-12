@@ -4,9 +4,17 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
 
 let geoLayer;
 
-function getColor(flow) {
-    if (flow < 200) return "green";
-    if (flow < 500) return "orange";
+function getColor(congestion) {
+
+    if (congestion < 1.2)
+        return "green";
+
+    if (congestion < 2)
+        return "yellow";
+
+    if (congestion < 3)
+        return "orange";
+
     return "red";
 }
 
@@ -28,7 +36,7 @@ function loadMap() {
 
                         style: function (feature) {
 
-                            // intentamos leer flujo del backend
+                            // Get flow from backend
                             const u = feature.properties.u;
                             const v = feature.properties.v;
 
@@ -36,13 +44,22 @@ function loadMap() {
                                 e => e.u === u && e.v === v
                             );
 
-                            const flow = edge ? edge.flow : 100;
+                            const congestion = edge ? edge.congestion : 1;
 
                             return {
-                                color: edge && edge.closed
-                                    ? "black"
-                                    : getColor(flow),
-                                weight: 3
+
+                                color:
+                                    edge && edge.closed
+                                        ? "black"
+                                        : getColor(congestion),
+
+                                weight:
+                                    edge && edge.closed
+                                        ? 6
+                                        : Math.min(
+                                            8,
+                                            2 + congestion
+                                        )
                             };
                         },
 
@@ -70,7 +87,47 @@ function loadMap() {
                     }).addTo(map);
 
                 });
+
+            const alertContainer = document.getElementById('traffic-alert-box'); 
+                
+            if (state.alert && state.alert.interrupted) {
+                // Build list of suggested reopenings
+                let listItems = state.alert.suggested_reopenings.map(street => {
+                    return `<li><strong>${street.name}</strong></li>`;
+                }).join('');
+
+                // Show alert on the web
+                alertContainer.innerHTML = `
+                    <div style="background-color: #ffcccc; color: #cc0000; padding: 15px; border: 1px solid #cc0000; border-radius: 5px; margin: 10px 0;">
+                        <p>⚠️ <strong>Warning!</strong> Valencia is now separated by closed streets.</p>
+                        <p>You can reconnect Valencia reopening any of these streets:</p>
+                        <ul>${listItems}</ul>
+                    </div>
+                `;
+                alertContainer.style.display = 'block';
+            } else {
+                // If no alert:
+                alertContainer.innerHTML = '';
+                alertContainer.style.display = 'none';
+            }
         });
+        const impactedDiv =
+            document.getElementById(
+                "impacted"
+            );
+
+        if (impactedDiv) {
+
+            impactedDiv.innerHTML =
+                state.impacted
+                .map(street => `
+                    <p>
+                        ${street.street}
+                        (+${street.increase})
+                    </p>
+                `)
+                .join("");
+        }
 }
 
 function selectEdge(u, v) {
@@ -83,13 +140,44 @@ function selectEdge(u, v) {
     .then(r => r.json())
     .then(data => {
 
-        document.getElementById("panel").innerHTML = `
-            <h3>${data.name}</h3>
-            <p>Flujo: ${data.flow}</p>
-            <p>Congestión: ${data.congestion}</p>
+        document.getElementById("info").innerHTML = `
 
-            <button onclick="closeStreet()">Cerrar calle</button>
-            <button onclick="openStreet()">Abrir calle</button>
+        <h3>${data.name}</h3>
+
+        <p>
+        Length:
+        ${Math.round(data.length)} m
+        </p>
+
+        <p>
+        Flow:
+        ${data.flow}
+        </p>
+
+        <p>
+        Base flow:
+        ${data.base_flow}
+        </p>
+
+        <p>
+        Congestion:
+        ${data.congestion}x
+        </p>
+
+        <p>
+        Status:
+        ${data.closed
+            ? "Closed"
+            : "Open"}
+        </p>
+
+        <button onclick="closeStreet()">
+        Close street
+        </button>
+
+        <button onclick="openStreet()">
+        Open street
+        </button>
         `;
     });
 }

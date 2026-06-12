@@ -1,7 +1,6 @@
 from flask import Flask, render_template, jsonify, request
 import osmnx as ox
 import networkx as nx
-import random
 from pathlib import Path
 import pandas as pd
 from functools import lru_cache
@@ -196,6 +195,23 @@ scenario = {
 }
 
 # =========================
+# Changing hour
+# =========================
+@app.route("/api/set_hour", methods=["POST"])
+def set_hour():
+
+    data = request.get_json()
+
+    hour = int(data["hour"])
+
+    scenario["hour"] = f"{hour:02d}-00"
+
+    return jsonify({
+        "ok": True,
+        "hour": scenario["hour"]
+    })
+
+# =========================
 # Base edge flow, to be set with historic data
 # =========================
 def init_flows():
@@ -307,6 +323,35 @@ def edge_list():
     return edges
 
 
+def impacted_streets():
+
+    streets = []
+
+    for u, v, k, data in G.edges(keys=True, data=True):
+
+        increase = data["flow"] - data["base_flow"]
+
+        if increase <= 0:
+            continue
+
+        name = data.get("name", "Unknown street")
+
+        if isinstance(name, list):
+            name = " / ".join(name)
+
+        streets.append({
+            "street": name,
+            "increase": round(increase, 1)
+        })
+
+    streets.sort(
+        key=lambda x: x["increase"],
+        reverse=True
+    )
+
+    return streets[:10]
+
+
 # =========================
 # WEB VIEW
 # =========================
@@ -314,6 +359,11 @@ def edge_list():
 def map_view():
     return render_template("map.html")
 
+@app.route("/analytics")
+def analytics_page():
+    return render_template(
+        "analytics.html"
+    )
 
 @app.route("/analysis/<int:node>")
 def analysis_view(node):
@@ -330,7 +380,9 @@ def state():
     return jsonify({
         "hour": scenario["hour"],
         "closed_edges": list(scenario["closed_edges"]),
-        "edges": edge_list()
+        "edges": edge_list(),
+        "alert": scenario["traffic_alert"],
+        "impacted": impacted_streets()
     })
 
 
@@ -375,6 +427,10 @@ def select_edge():
 # =========================
 @app.route("/api/close_edge", methods=["POST"])
 def close_edge():
+    if scenario["selected_edge"] is None:
+        return jsonify({
+            "error": "No street selected"
+        }), 400
     u, v = scenario["selected_edge"]
     scenario["closed_edges"].add((u, v))
     return jsonify({"ok": True})
@@ -385,6 +441,10 @@ def close_edge():
 # =========================
 @app.route("/api/open_edge", methods=["POST"])
 def open_edge():
+    if scenario["selected_edge"] is None:
+        return jsonify({
+            "error": "No street selected"
+        }), 400
     u, v = scenario["selected_edge"]
     scenario["closed_edges"].discard((u, v))
     return jsonify({"ok": True})
@@ -393,15 +453,99 @@ def open_edge():
 # =========================
 # SIMPLE ANALYSIS
 # =========================
-@app.route("/api/analysis/<int:node>")
-def analysis(node):
+@app.route("/api/analytics")
+def analytics():
+
+    compute_flows()
+
+    if scenario["selected_edge"]:
+
+        u,v = scenario["selected_edge"]
+
+        edge = next(
+            iter(G[u][v].values())
+        )
+
+        street_name = edge.get(
+            "name",
+            "Unknown street"
+        )
+
+        if isinstance(
+            street_name,
+            list
+        ):
+            street_name = " / ".join(
+                street_name
+            )
+
+        return jsonify({
+
+            "mode":"street",
+
+            "street":street_name,
+
+            "flow":[
+                edge["base_flow"]*0.5,
+                edge["base_flow"]*0.7,
+                edge["base_flow"],
+                edge["flow"]
+            ],
+
+            "labels":[
+                "Night",
+                "Morning",
+                "Normal",
+                "Current"
+            ],
+
+            "congestion":edge["congestion"],
+
+            "length":round(
+                edge["length"],
+                1
+            )
+        })
+
+    avg_congestion = sum(
+        d["congestion"]
+        for d in edge_list()
+    ) / max(
+        len(edge_list()),
+        1
+    )
+
+    closed = len(
+        scenario["closed_edges"]
+    )
+
     return jsonify({
-        "hours": ["06", "08", "10", "12", "18", "22"],
-        "flow": [300, 1200, 900, 1100, 1600, 700],
-        "impact": [
-            {"street": "Xàtiva", "value": 28},
-            {"street": "Gran Vía", "value": 21},
-            {"street": "Guillem Castro", "value": 15}
+
+        "mode":"global",
+
+        "average_congestion":
+            round(
+                avg_congestion,
+                2
+            ),
+
+        "closed_streets":
+            closed,
+
+        "flow":[
+            800,
+            1200,
+            1800,
+            1600,
+            900
+        ],
+
+        "labels":[
+            "06",
+            "08",
+            "12",
+            "18",
+            "22"
         ]
     })
 

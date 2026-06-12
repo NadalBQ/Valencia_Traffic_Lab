@@ -1,14 +1,34 @@
-const slider = document.getElementById("hour");
-const label = document.getElementById("hourLabel");
+const slider =
+    document.getElementById("hour");
 
-slider.addEventListener("input", () => {
+const label =
+    document.getElementById("hourLabel");
 
-    label.innerText = slider.value + ":00";
+slider.addEventListener(
+    "input",
+    () => {
 
-    fetch("/api/state")
-        .then(r => r.json())
+        label.innerText =
+            slider.value.padStart(2, "0")
+            + ":00";
+
+        fetch("/api/set_hour", {
+
+            method: "POST",
+
+            headers: {
+                "Content-Type":
+                "application/json"
+            },
+
+            body: JSON.stringify({
+                hour: slider.value
+            })
+
+        })
         .then(() => {
-            // el backend ya recalcula flujos
-            window.dispatchEvent(new Event("reload-map"));
+            loadMap();
         });
-});
+
+    }
+);
