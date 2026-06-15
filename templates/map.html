@@ -3,8 +3,25 @@
 {% block content %}
 <div id="traffic-alert-box"></div>
 <div class="controls">
-    <input type="range" id="hour" min="0" max="23" value="8">
-    <span id="hourLabel">08:00</span>
+
+    <label for="datePicker">Date:</label>
+    <select id="datePicker"></select>
+
+    <label for="hour">Hour:</label>
+    <select id="hour"></select>
+
+    <span id="hourLabel"></span>
+
+</div>
+
+<div class="legend">
+    <strong>Legend:</strong>
+    <span><b class="legend-green"></b> Low traffic</span>
+    <span><b class="legend-yellow"></b> Medium traffic</span>
+    <span><b class="legend-orange"></b> Increased traffic</span>
+    <span><b class="legend-red"></b> High impact</span>
+    <span><b class="legend-black"></b> Closed street</span>
+    <span><b class="legend-blue"></b> Selected street</span>
 </div>
 
 <div class="layout">
@@ -22,6 +39,27 @@
         <h4>Most impacted streets</h4>
 
         <div id="impacted"></div>
+
+        <hr>
+
+        <h4>Methodology</h4>
+
+        <div class="methodology-box">
+            <p>
+                This application combines Valencia open traffic data with the OpenStreetMap road network.
+            </p>
+
+            <p>
+                Traffic states from the CSV files are converted into estimated flow values.
+                When a street is closed, the app removes it from the routing graph and searches
+                for alternative shortest paths.
+            </p>
+
+            <p>
+                The redirected traffic is added to the alternative route. Streets with the highest
+                additional flow are shown as the most impacted streets.
+            </p>
+        </div>
 
     </div>
 

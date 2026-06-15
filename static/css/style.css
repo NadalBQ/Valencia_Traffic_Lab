@@ -1,26 +1,365 @@
-body { margin: 0; font-family: Arial; }
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: Inter, Arial, sans-serif;
+    background: #f3f4f6;
+    color: #111827;
+}
+
+/* =========================
+   Header / Navigation
+========================= */
 
 header {
-    background: #111;
+    background: #111827;
     color: white;
-    padding: 10px;
-}
-
-.layout {
+    padding: 14px 24px;
     display: flex;
-    height: 90vh;
+    align-items: center;
+    justify-content: space-between;
 }
 
-#map {
-    flex: 3;
+header h1,
+header h2 {
+    margin: 0;
+    font-size: 20px;
 }
 
-#panel {
-    flex: 1;
-    background: #f4f4f4;
-    padding: 10px;
+header a {
+    color: white;
+    text-decoration: none;
+    margin-left: 18px;
+    font-weight: 500;
+}
+
+header a:hover {
+    color: #93c5fd;
+}
+
+/* =========================
+   General layout
+========================= */
+
+.page-title {
+    margin: 28px 24px 20px 24px;
+    font-size: 24px;
+    color: #111827;
+}
+
+.page-container {
+    padding: 20px;
 }
 
 .controls {
-    padding: 10px;
+    background: white;
+    margin: 16px 20px;
+    padding: 14px 18px;
+    border-radius: 12px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.controls label {
+    font-weight: 600;
+    color: #374151;
+}
+
+.controls select,
+.controls input {
+    padding: 7px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: white;
+}
+
+.controls span {
+    font-weight: 600;
+    color: #2563eb;
+}
+
+/* =========================
+   Legend
+========================= */
+
+.legend {
+    margin: 0 20px 16px 20px;
+    padding: 10px 14px;
+    background: white;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: center;
+    font-size: 14px;
+    border-radius: 10px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.legend span {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.legend b {
+    display: inline-block;
+    width: 22px;
+    height: 6px;
+    border-radius: 4px;
+}
+
+.legend-green {
+    background: green;
+}
+
+.legend-yellow {
+    background: yellow;
+    border: 1px solid #999;
+}
+
+.legend-orange {
+    background: orange;
+}
+
+.legend-red {
+    background: red;
+}
+
+.legend-black {
+    background: black;
+}
+
+.legend-blue {
+    background: blue;
+}
+
+/* =========================
+   Map page
+========================= */
+
+.layout {
+    display: grid;
+    grid-template-columns: 3fr 1.1fr;
+    gap: 20px;
+    padding: 0 20px 20px 20px;
+    height: calc(100vh - 180px);
+}
+
+#map {
+    height: 100%;
+    min-height: 600px;
+    border-radius: 14px;
+    overflow: hidden;
+    background: #e5e7eb;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.12);
+}
+
+#panel {
+    background: white;
+    padding: 18px;
+    border-radius: 14px;
+    overflow-y: auto;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.08);
+}
+
+#panel h3,
+#panel h4 {
+    margin-top: 0;
+    color: #111827;
+}
+
+#info {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 14px;
+}
+
+#info button,
+.analytics-toggle button,
+button {
+    background: #2563eb;
+    color: white;
+    border: none;
+    padding: 9px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    margin: 4px 4px 4px 0;
+}
+
+#info button:hover,
+.analytics-toggle button:hover,
+button:hover {
+    background: #1d4ed8;
+}
+
+#impacted p {
+    background: #f9fafb;
+    border-left: 4px solid #f97316;
+    padding: 8px 10px;
+    border-radius: 6px;
+    margin: 8px 0;
+    font-size: 14px;
+}
+
+/* =========================
+   Alert
+========================= */
+
+#traffic-alert-box {
+    margin: 0 20px 14px 20px;
+}
+
+/* =========================
+   Methodology
+========================= */
+
+.methodology-box {
+    background: #f9fafb;
+    padding: 12px;
+    border-radius: 10px;
+    font-size: 14px;
+    line-height: 1.45;
+    border: 1px solid #e5e7eb;
+}
+
+.methodology-box p {
+    margin-top: 0;
+}
+
+/* =========================
+   Analytics page
+========================= */
+
+#streetTitle {
+    margin: 20px;
+    background: white;
+    border-radius: 12px;
+    padding: 18px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+#streetTitle h3 {
+    margin: 0 0 6px 0;
+}
+
+.analytics-toggle {
+    padding: 0 20px 10px 20px;
+    display: flex;
+    gap: 10px;
+}
+
+.summary-cards {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 15px;
+    padding: 10px 20px 20px 20px;
+}
+
+.summary-card {
+    background: white;
+    border-radius: 12px;
+    padding: 18px;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.summary-card h4 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    color: #6b7280;
+}
+
+.summary-card p {
+    margin: 0;
+    font-size: 26px;
+    font-weight: bold;
+    color: #111827;
+}
+
+.analytics-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    padding: 0 20px 20px 20px;
+}
+
+.chart-card {
+    height: 320px;
+    background: white;
+    padding: 18px;
+    border-radius: 14px;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.08);
+}
+
+.chart-card canvas {
+    width: 100% !important;
+    height: 100% !important;
+}
+
+.wide-chart {
+    grid-column: 1 / -1;
+    height: 360px;
+}
+
+#insights {
+    margin: 0 20px 30px 20px;
+    background: white;
+    border-radius: 14px;
+    padding: 20px;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.08);
+}
+
+.insight-box {
+    background: #f9fafb;
+    padding: 15px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    border: 1px solid #e5e7eb;
+}
+
+/* =========================
+   Responsive
+========================= */
+
+@media (max-width: 1000px) {
+    .layout {
+        grid-template-columns: 1fr;
+        height: auto;
+    }
+
+    #map {
+        height: 600px;
+    }
+
+    .analytics-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .summary-cards {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+@media (max-width: 600px) {
+    .controls {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .summary-cards {
+        grid-template-columns: 1fr;
+    }
+
+    header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
 }

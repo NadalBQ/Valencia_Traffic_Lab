@@ -1,0 +1,22 @@
+
+# Local/cache files
+__pycache__/
+*.pyc
+.DS_Store
+venv/
+.env
+.ipynb_checkpoints/
+
+# Large raw downloads
+*.zip
+
+# Generated mapping cache
+cache/*.pkl
+
+# Ignore non-hourly traffic snapshots
+traffic_data/estat_traf*_??-15-*.csv
+traffic_data/estat_traf*_??-30-*.csv
+traffic_data/estat_traf*_??-45-*.csv
+
+# Ignore cache folder
+cache/

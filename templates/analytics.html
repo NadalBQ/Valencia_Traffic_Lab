@@ -1,18 +1,39 @@
 {% extends "base.html" %}
 
 {% block content %}
-
-<h2>Traffic Analytics</h2>
+<div class="page-title">
+    <h2>Traffic Analytics</h2>
+</div>
 
 <div id="streetTitle">
     Global Valencia Analytics
 </div>
 
+<div class="analytics-toggle">
+    <button onclick="loadAnalytics('global')">
+        Global Analytics
+    </button>
+
+    <button onclick="loadAnalytics('street')">
+        Selected Street Analytics
+    </button>
+</div>
+
+<div id="summaryCards" class="summary-cards"></div>
+
 <div class="analytics-grid">
 
-    <canvas id="flowChart"></canvas>
+    <div class="chart-card">
+        <canvas id="flowChart"></canvas>
+    </div>
 
-    <canvas id="congestionChart"></canvas>
+    <div class="chart-card">
+        <canvas id="congestionChart"></canvas>
+    </div>
+
+    <div class="chart-card wide-chart">
+        <canvas id="impactChart"></canvas>
+    </div>
 
 </div>
 

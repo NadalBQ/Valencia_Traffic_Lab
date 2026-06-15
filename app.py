@@ -7,40 +7,86 @@ from functools import lru_cache
 import json
 import pickle
 import os
+import re
 
 
 TRAFFIC_DIR = Path("traffic_data")
 
+app = Flask(__name__)
 
-# Build the map
 
+# =========================
+# Real Valencia Graph
+# =========================
+G = ox.graph_from_place("Valencia, Spain", network_type="drive")
+
+
+# =========================
+# Traffic CSV helpers
+# =========================
 def get_reference_csv():
+    """
+    Finds one traffic CSV file to build the mapping between Valencia traffic
+    segment IDs and OSMnx graph edges.
 
+    rglob searches recursively, so CSV files can be inside subfolders such as:
+    traffic_data/estat_trafic_VLC-main/...
+    """
     files = sorted(
-        TRAFFIC_DIR.glob("estat_traf*.csv")
+        TRAFFIC_DIR.rglob("estat_traf*.csv")
     )
 
     if not files:
         raise RuntimeError(
-            "No traffic CSV found"
+            "No traffic CSV found. Put at least one estat_traf*.csv file inside traffic_data."
         )
-    
+
+    print("Reference CSV:", files[0])
     return str(files[0])
 
 
-def build_segment_mapping():
+@lru_cache(maxsize=100)
+def load_traffic_snapshot(date_str, hour_str):
+    """
+    Loads one traffic CSV for a specific date and hour.
 
+    Expected filename pattern:
+    estat_trafDD-MM-YYYY_HH-00-XX.csv
+
+    Example:
+    estat_traf01-01-2023_08-00-02.csv
+    """
+    pattern = f"estat_traf{date_str}_{hour_str}*.csv"
+
+    files = sorted(
+        TRAFFIC_DIR.rglob(pattern)
+    )
+
+    print("Searching traffic file:", pattern)
+    print("Found:", files[:3])
+
+    if not files:
+        return None
+
+    return pd.read_csv(files[0], sep=";")
+
+
+def build_segment_mapping():
+    """
+    Maps traffic segment IDs from the CSV files to the nearest OSMnx edges.
+    The result is cached because this step can be slow.
+    """
     cache_file = "cache/segment_mapping.pkl"
 
     if os.path.exists(cache_file):
-
         with open(cache_file, "rb") as f:
             return pickle.load(f)
 
     print("Building traffic mapping...")
 
     df = pd.read_csv(
-        get_reference_csv(), sep=";"
+        get_reference_csv(),
+        sep=";"
     )
 
     mapping = {}
@@ -48,7 +94,6 @@ def build_segment_mapping():
     for _, row in df.iterrows():
 
         try:
-
             geometry = json.loads(
                 row["geo_shape"]
             )
@@ -56,7 +101,7 @@ def build_segment_mapping():
             coords = geometry["coordinates"]
 
             midpoint = coords[
-                len(coords)//2
+                len(coords) // 2
             ]
 
             lon = midpoint[0]
@@ -94,41 +139,35 @@ def build_segment_mapping():
     return mapping
 
 
-
-
-@lru_cache(maxsize=50)
-def load_traffic_snapshot(
-    date_str,
-    hour_str
-):
-
-    pattern = (
-        f"estat_traf"
-        f"{date_str}_"
-        f"{hour_str}*.csv"
-    )
-
-    files = list(
-        TRAFFIC_DIR.glob(pattern)
-    )
-
-    if not files:
-        return None
-
-    return pd.read_csv(files[0], sep=";")
-
-
-app = Flask(__name__)
-
-# =========================
-# Real Valencia Graph
-# =========================
-G = ox.graph_from_place("Valencia, Spain", network_type="drive")
-
 SEGMENT_MAPPING = build_segment_mapping()
-print(len(SEGMENT_MAPPING))
-def apply_snapshot(snapshot):
+print("Mapped traffic segments:", len(SEGMENT_MAPPING))
 
+
+# =========================
+# Starting scenario
+# =========================
+scenario = {
+    # Change this if your default available date is different.
+    # Browser date picker value 2023-01-01 becomes 01-01-2023 here.
+    "date": "01-01-2023",
+    "hour": "00-00",
+    "selected_edge": None,
+    "closed_edges": set(),
+    "traffic_alert": {
+        "interrupted": False,
+        "suggested_reopenings": []
+    }
+}
+
+
+# =========================
+# Apply traffic snapshot
+# =========================
+def apply_snapshot(snapshot):
+    """
+    Converts traffic status values from the CSV into approximate flow values.
+    This is a simplified modelling step for the prototype.
+    """
     state_to_flow = {
         0: 50,
         1: 200,
@@ -156,22 +195,287 @@ def apply_snapshot(snapshot):
             100
         )
 
-        G[u][v][k]["base_flow"] = flow
+        if G.has_edge(u, v, k):
+            G[u][v][k]["base_flow"] = flow
 
 
+# =========================
+# Initial default flows
+# =========================
+def init_flows():
+    for u, v, k, data in G.edges(keys=True, data=True):
+        base = max(
+            50,
+            int(1000 / (data.get("length", 100) + 1))
+        )
+        data["base_flow"] = base
+        data["flow"] = base
+
+
+init_flows()
+
+
+# =========================
+# Utility helpers
+# =========================
+def get_first_edge_data(u, v):
+    """
+    Safely returns the first edge data object between u and v.
+    OSMnx MultiDiGraphs can have different edge keys, not always key 0.
+    """
+    if not G.has_edge(u, v):
+        return None
+
+    return next(iter(G[u][v].values()))
+
+
+def get_street_name(edge_data, fallback="Unknown street"):
+    name = edge_data.get("name", fallback)
+
+    if isinstance(name, list):
+        name = " / ".join(name)
+
+    return name
+
+
+def calculate_congestion(edge_data):
+    return round(
+        edge_data.get("flow", 1) / max(edge_data.get("base_flow", 1), 1),
+        2
+    )
+
+
+# =========================
+# Flow estimation after closing edges
+# =========================
+def compute_flows():
+    """
+    1. Loads the current traffic snapshot for selected date/hour.
+    2. Resets all flows to base flows.
+    3. If streets are closed, removes them from a temporary graph.
+    4. Redistributes the trapped flow through alternative paths.
+    """
+    scenario["traffic_alert"] = {
+        "interrupted": False,
+        "suggested_reopenings": []
+    }
+
+    # 1. Reset initial state using historical data from the selected snapshot
+    snapshot = load_traffic_snapshot(
+        scenario["date"],
+        scenario["hour"]
+    )
+
+    if snapshot is not None:
+        apply_snapshot(snapshot)
+    else:
+        print(
+            f"No snapshot found for date={scenario['date']} hour={scenario['hour']}. Using fallback values."
+        )
+
+        for u, v, k, data in G.edges(keys=True, data=True):
+            data["base_flow"] = max(
+                50,
+                int(1000 / (data.get("length", 100) + 1))
+            )
+
+    # Reset current flow to base flow
+    for u, v, k, data in G.edges(keys=True, data=True):
+        data["flow"] = data["base_flow"]
+
+    if not scenario["closed_edges"]:
+        return
+
+    # 2. Store trapped flow BEFORE setting closed streets to zero
+    trapped_flows = []
+
+    for u, v in scenario["closed_edges"]:
+
+        if not G.has_edge(u, v):
+            continue
+
+        for k in list(G[u][v].keys()):
+
+            trapped_flow = G[u][v][k].get("base_flow", 0)
+
+            trapped_flows.append({
+                "u": u,
+                "v": v,
+                "k": k,
+                "flow": trapped_flow
+            })
+
+            # The closed street itself has no current traffic
+            G[u][v][k]["flow"] = 0
+
+    # 3. Create a temporary graph and REALLY remove closed streets
+    G_temp = G.copy()
+
+    for u, v in scenario["closed_edges"]:
+
+        if G_temp.has_edge(u, v):
+            for k in list(G_temp[u][v].keys()):
+                G_temp.remove_edge(u, v, k)
+
+    # 4. Redistribute the trapped flow to alternative paths
+    for item in trapped_flows:
+
+        u = item["u"]
+        v = item["v"]
+        trapped_flow = item["flow"]
+
+        if trapped_flow <= 0:
+            continue
+
+        try:
+            alternative_path = nx.shortest_path(
+                G_temp,
+                source=u,
+                target=v,
+                weight="length"
+            )
+
+            for i in range(len(alternative_path) - 1):
+
+                alt_u = alternative_path[i]
+                alt_v = alternative_path[i + 1]
+
+                # Never add traffic back to a closed street
+                if (alt_u, alt_v) in scenario["closed_edges"]:
+                    continue
+
+                if not G.has_edge(alt_u, alt_v):
+                    continue
+
+                for alt_k in G[alt_u][alt_v]:
+
+                    # Extra safety: skip if this exact edge is closed
+                    if (alt_u, alt_v) in scenario["closed_edges"]:
+                        continue
+
+                    G[alt_u][alt_v][alt_k]["flow"] += trapped_flow
+
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+
+            scenario["traffic_alert"]["interrupted"] = True
+
+            suggested = []
+
+            for cu, cv in scenario["closed_edges"]:
+
+                edge_data = get_first_edge_data(cu, cv)
+
+                if edge_data is None:
+                    continue
+
+                street_name = get_street_name(
+                    edge_data,
+                    f"Calle ({cu} -> {cv})"
+                )
+
+                street_info = {
+                    "u": cu,
+                    "v": cv,
+                    "name": street_name
+                }
+
+                if street_info not in suggested:
+                    suggested.append(street_info)
+
+            scenario["traffic_alert"]["suggested_reopenings"] = suggested
+
+# =========================
+# Edge info
+# =========================
+def edge_list():
+    edges = []
+
+    for u, v, k, data in G.edges(keys=True, data=True):
+
+        edges.append({
+            "u": u,
+            "v": v,
+            "length": data.get("length", 0),
+            "flow": data.get("flow", 0),
+            "base_flow": data.get("base_flow", 0),
+            "congestion": calculate_congestion(data),
+            "closed": (u, v) in scenario["closed_edges"],
+            "selected": scenario["selected_edge"] == (u, v)
+        })
+
+    return edges
+
+
+def impacted_streets():
+    street_impacts = {}
+
+    for u, v, k, data in G.edges(keys=True, data=True):
+
+        increase = data.get("flow", 0) - data.get("base_flow", 0)
+
+        if increase <= 0:
+            continue
+
+        name = get_street_name(
+            data,
+            "Unknown street"
+        )
+
+        if name not in street_impacts:
+            street_impacts[name] = {
+                "street": name,
+                "increase": 0,
+                "segments": 0
+            }
+
+        street_impacts[name]["increase"] += increase
+        street_impacts[name]["segments"] += 1
+
+    streets = list(street_impacts.values())
+
+    for street in streets:
+        street["increase"] = round(street["increase"], 1)
+
+    streets.sort(
+        key=lambda x: x["increase"],
+        reverse=True
+    )
+
+    return streets[:10]
+
+
+# =========================
+# Web views
+# =========================
+@app.route("/")
+def map_view():
+    return render_template("map.html")
+
+
+@app.route("/analytics")
+def analytics_page():
+    return render_template("analytics.html")
+
+
+@app.route("/analysis/<int:node>")
+def analysis_view(node):
+    return render_template("analysis.html", node=node)
+
+
+# =========================
+# API: GeoJSON
+# =========================
 @app.route("/api/geojson")
 def geojson():
+    nodes, edges = ox.graph_to_gdfs(
+        G,
+        nodes=True,
+        edges=True
+    )
 
-    # 1. extract edges
-    nodes, edges = ox.graph_to_gdfs(G, nodes=True, edges=True)
-
-    # 2. set u/v/key as columns
     edges = edges.reset_index()
-
-    # 3. ensure lat/lon
     edges = edges.to_crs(epsg=4326)
 
-    # 4. unique id
     edges["edge_id"] = (
         edges["u"].astype(str) + "_" +
         edges["v"].astype(str) + "_" +
@@ -180,22 +484,9 @@ def geojson():
 
     return edges.__geo_interface__
 
-# =========================
-# Starting scenario
-# =========================
-scenario = {
-    "date": "31-12-2022",
-    "hour": "00-00",
-    "selected_edge": None,
-    "closed_edges": set(),
-    "traffic_alert": {
-        "interrupted": False,
-        "suggested_reopenings": []
-    }
-}
 
 # =========================
-# Changing hour
+# API: Change hour
 # =========================
 @app.route("/api/set_hour", methods=["POST"])
 def set_hour():
@@ -211,173 +502,85 @@ def set_hour():
         "hour": scenario["hour"]
     })
 
-# =========================
-# Base edge flow, to be set with historic data
-# =========================
-def init_flows():
-    for u, v, k, data in G.edges(keys=True, data=True):
-        base = max(50, int(1000 / (data.get("length", 100) + 1)))
-        data["base_flow"] = base
-        data["flow"] = base
-
-init_flows()
 
 # =========================
-# Flow estimation after closing edges
+# API: Change date
 # =========================
-def compute_flows():
-    # Reset the alert after each call
-    scenario["traffic_alert"] = {
-        "interrupted": False,
-        "suggested_reopenings": []
-    }
+@app.route("/api/set_date", methods=["POST"])
+def set_date():
 
-    # 1. Reset initial state using historical data from the snapshot
-    snapshot = load_traffic_snapshot(scenario["date"], scenario["hour"])
-    if snapshot is not None:
-        apply_snapshot(snapshot)
-    else:
-        for u, v, k, data in G.edges(keys=True, data=True):
-            data["base_flow"] = max(50, int(1000 / (data.get("length", 100) + 1)))
+    data = request.get_json()
 
-    for u, v, k, data in G.edges(keys=True, data=True):
-        data["flow"] = data["base_flow"]
+    date = data["date"]
 
-    if not scenario["closed_edges"]:
-        return
+    # Convert YYYY-MM-DD from browser date picker to DD-MM-YYYY for file names
+    year, month, day = date.split("-")
 
-    # 2. Make a copy to calculate reroutes
-    G_temp = G.copy()
-    for u, v in scenario["closed_edges"]:
-        for k in G[u][v]:
-            G[u][v][k]["base_flow"] = G[u][v][k]["flow"]
-            G[u][v][k]["flow"] = 0
-            
-        if G_temp.has_edge(u, v):
-            for k in G_temp[u][v]:
-                G_temp[u][v][k]["length"] = 9999999  # Extreme penalty to avoid taking it
+    scenario["date"] = f"{day}-{month}-{year}"
 
-    # 3. Redistribute closed streets flow
-    for u, v in scenario["closed_edges"]:
-        if not G.has_edge(u, v):
-            continue
-            
-        for k in G[u][v]:
-            trapped_flow = G[u][v][k]["base_flow"]
-            if trapped_flow <= 0:
-                continue
-                
-            try:
-                # Look for alternative path
-                alternative_path = nx.shortest_path(G_temp, source=u, target=v, weight="length")
-                
-                # Redirect traffic
-                for i in range(len(alternative_path) - 1):
-                    alt_u = alternative_path[i]
-                    alt_v = alternative_path[i+1]
-                    for alt_k in G[alt_u][alt_v]:
-                        G[alt_u][alt_v][alt_k]["flow"] += trapped_flow
-                        
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
-                scenario["traffic_alert"]["interrupted"] = True
-                
-                # Get closed street names to suggest
-                suggested = []
-                for cu, cv in scenario["closed_edges"]:
-                    # Try to get the name from the graph
-                    edge_data = G[cu][cv][0]
-                    street_name = edge_data.get("name", f"Calle ({cu} -> {cv})")
-                    
-                    # If OSM returns a list
-                    if isinstance(street_name, list):
-                        street_name = " / ".join(street_name)
-                        
-                    street_info = {"u": cu, "v": cv, "name": street_name}
-                    if street_info not in suggested:
-                        suggested.append(street_info)
-                
-                scenario["traffic_alert"]["suggested_reopenings"] = suggested
-                continue
-
+    return jsonify({
+        "ok": True,
+        "date": scenario["date"]
+    })
 
 # =========================
-# EDGE INFO
+# API: Available traffic snapshots
 # =========================
-def edge_list():
-    edges = []
+@app.route("/api/available_snapshots")
+def available_snapshots():
 
-    for u, v, k, data in G.edges(keys=True, data=True):
+    snapshots = {}
 
-        edges.append({
-            "u": u,
-            "v": v,
-            "length": data.get("length", 0),
-            "flow": data.get("flow", 0),
-            "base_flow": data.get("base_flow", 0),
-            "congestion": round(
-                data.get("flow", 1) / max(data.get("base_flow", 1), 1), 2
-            ),
-            "closed": (u, v) in scenario["closed_edges"]
-        })
-
-    return edges
-
-
-def impacted_streets():
-
-    streets = []
-
-    for u, v, k, data in G.edges(keys=True, data=True):
-
-        increase = data["flow"] - data["base_flow"]
-
-        if increase <= 0:
-            continue
-
-        name = data.get("name", "Unknown street")
-
-        if isinstance(name, list):
-            name = " / ".join(name)
-
-        streets.append({
-            "street": name,
-            "increase": round(increase, 1)
-        })
-
-    streets.sort(
-        key=lambda x: x["increase"],
-        reverse=True
+    pattern = re.compile(
+        r"estat_traf(\d{2}-\d{2}-\d{4})_(\d{2})-(\d{2})-\d{2}\.csv"
     )
 
-    return streets[:10]
-
-
-# =========================
-# WEB VIEW
-# =========================
-@app.route("/")
-def map_view():
-    return render_template("map.html")
-
-@app.route("/analytics")
-def analytics_page():
-    return render_template(
-        "analytics.html"
+    files = sorted(
+        TRAFFIC_DIR.rglob("estat_traf*.csv")
     )
 
-@app.route("/analysis/<int:node>")
-def analysis_view(node):
-    return render_template("analysis.html", node=node)
+    for file in files:
+
+        match = pattern.match(file.name)
+
+        if not match:
+            continue
+
+        date = match.group(1)
+        hour = match.group(2)
+        minute = match.group(3)
+
+        # Keep only full-hour snapshots because the current slider works hourly
+        if minute != "00":
+            continue
+
+        day, month, year = date.split("-")
+        browser_date = f"{year}-{month}-{day}"
+
+        if browser_date not in snapshots:
+            snapshots[browser_date] = []
+
+        if hour not in snapshots[browser_date]:
+            snapshots[browser_date].append(hour)
+
+    for date in snapshots:
+        snapshots[date].sort()
+
+    return jsonify({
+        "snapshots": snapshots
+    })
 
 
 # =========================
-# API STATE
+# API: State
 # =========================
 @app.route("/api/state")
 def state():
+
     compute_flows()
 
     return jsonify({
+        "date": scenario["date"],
         "hour": scenario["hour"],
         "closed_edges": list(scenario["closed_edges"]),
         "edges": edge_list(),
@@ -387,12 +590,11 @@ def state():
 
 
 # =========================
-# SELECT EDGE (STREET)
+# API: Select edge / street
 # =========================
 @app.route("/api/select_edge", methods=["POST"])
 def select_edge():
-    print("RAW DATA:", request.data)
-    print("JSON:", request.get_json())
+
     data = request.get_json(silent=True)
 
     if not data:
@@ -408,145 +610,249 @@ def select_edge():
 
     scenario["selected_edge"] = (u, v)
 
-    data = G[u][v][0]
+    edge_data = get_first_edge_data(u, v)
+
+    if edge_data is None:
+        return jsonify({"error": "Selected edge not found"}), 404
 
     return jsonify({
         "u": u,
         "v": v,
-        "name": data.get("name", "Sin nombre"),
-        "length": data.get("length", 0),
-        "flow": data.get("flow", 0),
-        "base_flow": data.get("base_flow", 0),
-        "congestion": round(data.get("flow", 1) / max(data.get("base_flow", 1), 1), 2),
+        "name": get_street_name(edge_data, "Sin nombre"),
+        "length": edge_data.get("length", 0),
+        "flow": edge_data.get("flow", 0),
+        "base_flow": edge_data.get("base_flow", 0),
+        "congestion": calculate_congestion(edge_data),
         "closed": (u, v) in scenario["closed_edges"]
     })
 
 
 # =========================
-# CLOSE EDGE (STREET)
+# API: Close selected street
 # =========================
 @app.route("/api/close_edge", methods=["POST"])
 def close_edge():
+
     if scenario["selected_edge"] is None:
         return jsonify({
             "error": "No street selected"
         }), 400
+
     u, v = scenario["selected_edge"]
     scenario["closed_edges"].add((u, v))
+
     return jsonify({"ok": True})
 
 
 # =========================
-# OPEN EDGE (STREET)
+# API: Open selected street
 # =========================
 @app.route("/api/open_edge", methods=["POST"])
 def open_edge():
+
     if scenario["selected_edge"] is None:
         return jsonify({
             "error": "No street selected"
         }), 400
+
     u, v = scenario["selected_edge"]
     scenario["closed_edges"].discard((u, v))
+
     return jsonify({"ok": True})
 
 
 # =========================
-# SIMPLE ANALYSIS
+# API: Analytics
 # =========================
 @app.route("/api/analytics")
 def analytics():
 
     compute_flows()
 
-    if scenario["selected_edge"]:
+    impacted = impacted_streets()
+    edges = edge_list()
 
-        u,v = scenario["selected_edge"]
+    closed_edges = [
+        edge for edge in edges
+        if edge["closed"]
+    ]
 
-        edge = next(
-            iter(G[u][v].values())
-        )
+    total_flow = sum(
+        edge["flow"]
+        for edge in edges
+    )
 
-        street_name = edge.get(
-            "name",
+    total_base_flow = sum(
+        edge["base_flow"]
+        for edge in edges
+    )
+
+    total_increase = total_flow - total_base_flow
+
+    avg_congestion = sum(
+        edge["congestion"]
+        for edge in edges
+    ) / max(len(edges), 1)
+
+    most_congested = max(
+        edges,
+        key=lambda edge: edge["congestion"],
+        default={"congestion": 0, "flow": 0}
+    )
+
+    # =========================
+    # Street mode
+    # =========================
+    force_global = request.args.get("mode") == "global"
+
+    if scenario["selected_edge"] and not force_global:
+
+        u, v = scenario["selected_edge"]
+
+        edge_data = get_first_edge_data(u, v)
+
+        if edge_data is None:
+            return jsonify({
+                "error": "Selected street not found"
+            }), 404
+
+        street_name = get_street_name(
+            edge_data,
             "Unknown street"
         )
 
-        if isinstance(
-            street_name,
-            list
-        ):
-            street_name = " / ".join(
-                street_name
+        base_flow = edge_data.get("base_flow", 0)
+        current_flow = edge_data.get("flow", 0)
+
+        flow_change = current_flow - base_flow
+
+        congestion = calculate_congestion(edge_data)
+
+        is_closed = (u, v) in scenario["closed_edges"]
+
+        if is_closed:
+            insight_text = (
+                "The selected street is currently closed. "
+                "Its traffic flow is redirected to alternative routes."
+            )
+        elif flow_change > 0:
+            insight_text = (
+                "The selected street receives additional traffic because of the current scenario."
+            )
+        elif flow_change < 0:
+            insight_text = (
+                "The selected street currently has less traffic than in the baseline."
+            )
+        else:
+            insight_text = (
+                "The selected street has no relevant traffic change compared to the baseline."
             )
 
         return jsonify({
+            "mode": "street",
 
-            "mode":"street",
+            "date": scenario["date"],
+            "hour": scenario["hour"],
 
-            "street":street_name,
+            "street": street_name,
 
-            "flow":[
-                edge["base_flow"]*0.5,
-                edge["base_flow"]*0.7,
-                edge["base_flow"],
-                edge["flow"]
+            "status": "Closed" if is_closed else "Open",
+
+            "flow": [
+                round(base_flow, 1),
+                round(current_flow, 1)
             ],
 
-            "labels":[
-                "Night",
-                "Morning",
-                "Normal",
-                "Current"
+            "labels": [
+                "Base flow",
+                "Current flow"
             ],
 
-            "congestion":edge["congestion"],
+            "base_flow": round(base_flow, 1),
+            "current_flow": round(current_flow, 1),
+            "flow_change": round(flow_change, 1),
 
-            "length":round(
-                edge["length"],
+            "congestion": congestion,
+
+            "length": round(
+                edge_data.get("length", 0),
                 1
-            )
-        })
-
-    avg_congestion = sum(
-        d["congestion"]
-        for d in edge_list()
-    ) / max(
-        len(edge_list()),
-        1
-    )
-
-    closed = len(
-        scenario["closed_edges"]
-    )
-
-    return jsonify({
-
-        "mode":"global",
-
-        "average_congestion":
-            round(
-                avg_congestion,
-                2
             ),
 
-        "closed_streets":
-            closed,
+            "closed_streets": len(scenario["closed_edges"]),
 
-        "flow":[
-            800,
-            1200,
-            1800,
-            1600,
-            900
+            "impacted": impacted,
+
+            "insight_text": insight_text
+        })
+
+    # =========================
+    # Global mode
+    # =========================
+    if len(scenario["closed_edges"]) == 0:
+        insight_text = (
+            "No streets are currently closed. The dashboard shows the baseline traffic situation "
+            "for the selected date and hour."
+        )
+    elif total_increase > 0:
+        insight_text = (
+            "The current street closure scenario redistributes traffic through the network. "
+            "The most impacted streets show where additional traffic is concentrated."
+        )
+    else:
+        insight_text = (
+            "The current scenario does not create a strong global traffic increase, "
+            "but local effects may still be visible on individual streets."
+        )
+
+    return jsonify({
+        "mode": "global",
+
+        "date": scenario["date"],
+        "hour": scenario["hour"],
+
+        "average_congestion": round(
+            avg_congestion,
+            2
+        ),
+
+        "most_congested": round(
+            most_congested["congestion"],
+            2
+        ),
+
+        "closed_streets": len(
+            scenario["closed_edges"]
+        ),
+
+        "total_flow": round(
+            total_flow,
+            1
+        ),
+
+        "total_base_flow": round(
+            total_base_flow,
+            1
+        ),
+
+        "total_increase": round(
+            total_increase,
+            1
+        ),
+
+        "flow": [
+            round(total_base_flow, 1),
+            round(total_flow, 1)
         ],
 
-        "labels":[
-            "06",
-            "08",
-            "12",
-            "18",
-            "22"
-        ]
+        "labels": [
+            "Base flow",
+            "Current flow"
+        ],
+
+        "impacted": impacted,
+
+        "insight_text": insight_text
     })
 
 
